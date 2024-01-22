@@ -1,94 +1,70 @@
-import compression from 'compression';
-import cookieParser from 'cookie-parser';
-import cors from 'cors';
-import config from '@/configs';
-import express from 'express';
+import express, { Response as ExpressResponse, NextFunction } from 'express';
 import helmet from 'helmet';
-import hpp from 'hpp';
-import morgan from 'morgan';
-import { connect, set } from 'mongoose';
-import swaggerJSDoc from 'swagger-jsdoc';
-import swaggerUi from 'swagger-ui-express';
-import { dbConnection } from '@databases';
-import { Routes } from '@interfaces/routes.interface';
-import errorMiddleware from '@middlewares/error.middleware';
-import { logger, stream } from '@utils/logger';
+import noCache from 'nocache';
+import compression from 'compression';
 
-class App {
-  public app: express.Application;
-  public port: string | number;
-  public env: string;
+import config from 'config';
+import routers from 'api';
+import { APP_CONSTANTS } from 'constants/app';
+import AppRequest from 'types/rest/AppRequest';
+import URLParams from 'types/rest/URLParams';
+import { errorMiddleware } from 'middleware/errorMiddleware';
+import initializeResources from 'resources';
 
-  constructor(routes: Routes[]) {
-    this.app = express();
-    this.port = config.port || 3000;
-    this.env = config.env || 'development';
+const app = express();
 
-    this.connectToDatabase();
-    this.initializeMiddlewares();
-    this.initializeRoutes(routes);
-    this.initializeSwagger();
-    this.initializeErrorHandling();
-  }
+app.use('/public', express.static('public'));
 
-  public listen() {
-    this.app.listen(this.port, () => {
-      logger.info(`=================================`);
-      logger.info(`======= ENV: ${this.env} =======`);
-      logger.info(`🚀 App listening on the port ${this.port}`);
-      logger.info(`=================================`);
-    });
-  }
-
-  public getServer() {
-    return this.app;
-  }
-
-  private connectToDatabase() {
-    if (this.env !== 'production') {
-      set('debug', true);
-    }
-
-    connect(dbConnection.url, dbConnection.options);
-  }
-
-  private initializeMiddlewares() {
-    console.log(config.log.format);
-    this.app.use(morgan(config.log.format, { stream }));
-    this.app.use(cors({ origin: config.cors.origin, credentials: config.cors.credentials }));
-    this.app.use(hpp());
-    this.app.use(helmet());
-    this.app.use(compression());
-    this.app.use(express.json());
-    this.app.use(express.urlencoded({ extended: true }));
-    this.app.use(cookieParser());
-  }
-
-  private initializeRoutes(routes: Routes[]) {
-    routes.forEach(route => {
-      this.app.use('/v2', route.router);
-    });
-  }
-
-  private initializeSwagger() {
-    const options = {
-      swaggerDefinition: {
-        info: {
-          title: 'REST API',
-          version: '1.0.0',
-          description: 'Example docs',
-        },
-      },
-      apis: ['swagger.yaml'],
-    };
-
-    const specs = swaggerJSDoc(options);
-    this.app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(specs));
-  }
-
-  private initializeErrorHandling() {
-    this.app.use(errorMiddleware);
-  }
+/**
+ * Initializes the security middleware for the application.
+ * This function adds various security middleware to enhance the security of the application.
+ * It includes middleware for preventing caching, setting frameguard, hiding powered by header,
+ * enabling HTTP Strict Transport Security (HSTS), preventing IE from executing downloads in the
+ * context of the site, preventing browsers from sniffing MIME types, and enabling XSS filter.
+ */
+function initializeSecurity() {
+  app.use(noCache());
+  app.use(helmet.frameguard());
+  app.use(helmet.hidePoweredBy());
+  app.use(helmet.hsts());
+  app.use(helmet.ieNoOpen());
+  app.use(helmet.noSniff());
+  app.use(helmet.xssFilter());
 }
 
-export default App;
+/**
+ * Initializes the middlewares for the application.
+ */
+function initializeMiddlewares() {
+  app.use(express.json());
+  app.use(express.urlencoded({ extended: true }));
+  app.use(
+    compression({
+      level: 6,
+      threshold: 100 * 1024,
+    }),
+  );
+
+  // use for computing processing time on response
+  app.use((request: AppRequest, _response: ExpressResponse, next: NextFunction) => {
+    request.startTime = Date.now();
+    request.searchParams = request.query as URLParams;
+    return next();
+  });
+}
+
+function initializeErrorHandler() {
+  app.use(errorMiddleware);
+}
+
+initializeSecurity();
+initializeMiddlewares();
+app.use(APP_CONSTANTS.apiPrefix, routers);
+initializeErrorHandler();
+
+export const listen = async () => {
+  await initializeResources();
+  app.listen(config.port, () => console.log(`🚀 Server running on port http://localhost:${config.port}`));
+};
+
+export default app;
